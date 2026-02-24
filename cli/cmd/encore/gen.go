@@ -45,10 +45,11 @@ func init() {
 By default generates the API based on your local environment.
 Use '--env=<name>' to generate it based on your cloud environments.
 
-Supported language codes are:
+	Supported language codes are:
   typescript: A TypeScript client using the Fetch API
   javascript: A JavaScript client using the Fetch API
   go: A Go client using net/http"
+  swift: A Swift client using URLSession
   openapi: An OpenAPI specification (EXPERIMENTAL)
 
 By default all services with a non-private API endpoint are included.
@@ -109,7 +110,7 @@ To further narrow down the services to generate, use the '--services' flag.
 				// Validate the user input for the language
 				l, err := clientgen.GetLang(lang)
 				if err != nil {
-					fatal(fmt.Sprintf("%s: supported languages are `typescript`, `javascript`, `go` and `openapi`", err))
+					fatal(fmt.Sprintf("%s: supported languages are `typescript`, `javascript`, `go`, `swift` and `openapi`", err))
 				}
 				lang = string(l)
 			}
@@ -180,16 +181,17 @@ which may require the user-facing wrapper code to be manually generated.`,
 	genCmd.AddCommand(genClientCmd)
 	genCmd.AddCommand(genWrappersCmd)
 
-	genClientCmd.Flags().StringVarP(&lang, "lang", "l", "", "The language to generate code for (\"typescript\", \"javascript\", \"go\", and \"openapi\" are supported)")
+	genClientCmd.Flags().StringVarP(&lang, "lang", "l", "", "The language to generate code for (\"typescript\", \"javascript\", \"go\", \"swift\", and \"openapi\" are supported)")
 	_ = genClientCmd.RegisterFlagCompletionFunc("lang", cmdutil.AutoCompleteFromStaticList(
 		"typescript\tA TypeScript client using the in-browser Fetch API",
 		"javascript\tA JavaScript client using the in-browser Fetch API",
 		"go\tA Go client using net/http",
+		"swift\tA Swift client using URLSession",
 		"openapi\tAn OpenAPI specification",
 	))
 
 	genClientCmd.Flags().StringVarP(&output, "output", "o", "", "The filename to write the generated client code to")
-	_ = genClientCmd.MarkFlagFilename("output", "go", "ts", "tsx", "js", "jsx")
+	_ = genClientCmd.MarkFlagFilename("output", "go", "ts", "tsx", "js", "jsx", "swift")
 
 	genClientCmd.Flags().StringVarP(&envName, "env", "e", "local", "The environment to fetch the API for (defaults to the local environment)")
 	_ = genClientCmd.RegisterFlagCompletionFunc("env", cmdutil.AutoCompleteEnvSlug)

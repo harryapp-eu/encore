@@ -23,6 +23,7 @@ const (
 	LangTypeScript Lang = "typescript"
 	LangJavascript Lang = "javascript"
 	LangGo         Lang = "go"
+	LangSwift      Lang = "swift"
 	LangOpenAPI    Lang = "openapi"
 )
 
@@ -44,6 +45,8 @@ func Detect(path string) (lang Lang, ok bool) {
 		return LangJavascript, true
 	case ".go":
 		return LangGo, true
+	case ".swift":
+		return LangSwift, true
 	default:
 		return LangUnknown, false
 	}
@@ -78,6 +81,8 @@ func Client(
 		gen = &javascript{generatorVersion: javascriptGenLatestVersion}
 	case LangGo:
 		gen = &golang{generatorVersion: goGenLatestVersion}
+	case LangSwift:
+		gen = &swift{generatorVersion: swiftGenLatestVersion}
 	case LangOpenAPI:
 		gen = openapi.New(openapi.LatestVersion)
 	default:
@@ -109,6 +114,8 @@ func GetLang(lang string) (Lang, error) {
 		return LangJavascript, nil
 	case "go", "golang":
 		return LangGo, nil
+	case "swift":
+		return LangSwift, nil
 	case "openapi", "swagger", "oas":
 		return LangOpenAPI, nil
 	default:

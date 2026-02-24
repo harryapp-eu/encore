@@ -7,8 +7,9 @@ use thiserror::Error;
 use crate::parser::resources::apis::api::{Method, Methods};
 use crate::parser::respath::Path;
 use crate::parser::types::{
-    drop_empty_or_void, unwrap_promise, unwrap_validated, validation, Basic, Custom, FieldName,
-    Interface, InterfaceField, ResolveState, Type, TypeChecker, WireLocation, WireSpec,
+    drop_empty_or_void, unwrap_promise, unwrap_validated, validation, Basic, Custom, EnumValue,
+    FieldName, Interface, InterfaceField, Literal, ResolveState, Type, TypeChecker, WireLocation,
+    WireSpec,
 };
 use crate::parser::Range;
 use crate::span_err::{ErrorWithSpanExt, SpErr};
@@ -195,7 +196,7 @@ pub fn describe_stream_endpoint(
     let (resp_enc, _resp_schema) = describe_resp(tc, &methods, &resp)?;
 
     let path = if let Some(ref enc) = handshake_enc {
-        rewrite_path_types(enc, path, false)?
+        rewrite_path_types(tc, enc, path, false)?
     } else {
         path
     };
@@ -235,7 +236,7 @@ pub fn describe_endpoint(
     let (req_enc, _req_schema) = describe_req(def_span, tc, &methods, Some(&path), &req, raw)?;
     let (resp_enc, _resp_schema) = describe_resp(tc, &methods, &resp)?;
 
-    let path = rewrite_path_types(&req_enc[0], path, raw)?;
+    let path = rewrite_path_types(tc, &req_enc[0], path, raw)?;
 
     Ok(EndpointEncoding {
         span: def_span,
@@ -529,7 +530,12 @@ fn extract_loc_params(fields: &FieldMap, default_loc: ParamLocation) -> ParseRes
     Ok(params)
 }
 
-fn rewrite_path_types(req: &RequestEncoding, path: Path, raw: bool) -> ParseResult<Path> {
+fn rewrite_path_types(
+    tc: &TypeChecker,
+    req: &RequestEncoding,
+    path: Path,
+    raw: bool,
+) -> ParseResult<Path> {
     use crate::parser::respath::{Segment, ValueType};
     // Get the path params into a map, keyed by name.
     let path_params = req
@@ -537,29 +543,87 @@ fn rewrite_path_types(req: &RequestEncoding, path: Path, raw: bool) -> ParseResu
         .map(|param| (param.name.as_str(), param))
         .collect::<HashMap<_, _>>();
 
-    fn typ_to_value_type(param: &Param) -> ParseResult<(ValueType, Option<validation::Expr>)> {
+    fn value_type_for_path_param(tc: &TypeChecker, typ: &Type) -> Option<ValueType> {
+        use crate::parser::respath::ValueType;
+
+        match typ {
+            Type::Basic(Basic::String) => Some(ValueType::String),
+            Type::Basic(Basic::Boolean) => Some(ValueType::Bool),
+            Type::Basic(Basic::Number | Basic::BigInt) => Some(ValueType::Int),
+            Type::Literal(Literal::String(_)) => Some(ValueType::String),
+            Type::Literal(Literal::Boolean(_)) => Some(ValueType::Bool),
+            Type::Literal(Literal::Number(_)) => Some(ValueType::Int),
+            Type::Enum(enum_type) => {
+                let mut detected = None;
+                for member in &enum_type.members {
+                    let member_type = match member.value {
+                        EnumValue::String(_) => ValueType::String,
+                        EnumValue::Number(_) => ValueType::Int,
+                    };
+                    if let Some(current) = detected {
+                        if current != member_type {
+                            return None;
+                        }
+                    } else {
+                        detected = Some(member_type);
+                    }
+                }
+                detected
+            }
+            Type::Union(union) => {
+                let mut detected = None;
+                for union_type in &union.types {
+                    let member_type = value_type_for_path_param(tc, union_type)?;
+                    if let Some(current) = detected {
+                        if current != member_type {
+                            return None;
+                        }
+                    } else {
+                        detected = Some(member_type);
+                    }
+                }
+                detected
+            }
+            Type::Optional(opt) => value_type_for_path_param(tc, &opt.0),
+            Type::Validated(validated) => value_type_for_path_param(tc, &validated.typ),
+            Type::Custom(Custom::WireSpec(spec)) => value_type_for_path_param(tc, &spec.underlying),
+            Type::Named(named) => {
+                let underlying = tc.underlying(named.obj.module_id, typ);
+                value_type_for_path_param(tc, &underlying)
+            }
+            _ => None,
+        }
+    }
+
+    fn typ_to_value_type(
+        tc: &TypeChecker,
+        param: &Param,
+    ) -> ParseResult<(ValueType, Option<validation::Expr>)> {
         // Unwrap any validation expression before we check the type.
         let (typ, expr) = unwrap_validated(&param.typ);
+        let resolved_typ = if let Type::Named(named) = typ {
+            tc.underlying(named.obj.module_id, typ)
+        } else {
+            typ.clone()
+        };
         if let Some(expr) = &expr {
-            if let Err(err) = expr.supports_type(typ) {
+            if let Err(err) = expr.supports_type(&resolved_typ) {
                 return Err(param.range.parse_err(err.to_string()));
             }
         }
 
-        match typ {
-            Type::Basic(Basic::String) => Ok((ValueType::String, expr.cloned())),
-            Type::Basic(Basic::Boolean) => Ok((ValueType::Bool, expr.cloned())),
-            Type::Basic(Basic::Number | Basic::BigInt) => Ok((ValueType::Int, expr.cloned())),
-            typ => Err(param
+        match value_type_for_path_param(tc, &resolved_typ) {
+            Some(value_type) => Ok((value_type, expr.cloned())),
+            None => Err(param
                 .range
                 .to_span()
-                .parse_err(format!("unsupported path parameter type: {typ:?}"))),
+                .parse_err(format!("unsupported path parameter type: {resolved_typ:?}"))),
         }
     }
 
     let resolve_value_type = |span: Span, name: &str| {
         match path_params.get(name) {
-            Some(param) => typ_to_value_type(param),
+            Some(param) => typ_to_value_type(tc, param),
             None => {
                 // Raw endpoints assume path params are strings.
                 if raw {
