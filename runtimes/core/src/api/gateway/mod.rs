@@ -14,7 +14,7 @@ use http::HeaderValue;
 use hyper::header;
 use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::protocols::http::error_resp;
-use pingora::proxy::{http_proxy_service, ProxyHttp, Session};
+use pingora::proxy::{http_proxy_service, FailToProxy, ProxyHttp, Session};
 use pingora::server::configuration::{Opt, ServerConf};
 use pingora::services::Service;
 use pingora::upstreams::peer::HttpPeer;
@@ -27,6 +27,7 @@ use crate::api::auth;
 use crate::api::call::{CallDesc, ServiceRegistry};
 use crate::api::paths::PathSet;
 use crate::api::reqauth::caller::Caller;
+use crate::api::reqauth::meta::{MetaKey, MetaMap};
 use crate::api::reqauth::{svcauth, CallMeta};
 use crate::{api, model, trace, EncoreName};
 
@@ -98,11 +99,20 @@ impl Gateway {
         own_api_address: Option<SocketAddr>,
         proxied_push_subs: HashMap<String, ProxiedPushSub>,
         tracer: trace::Tracer,
+        inbound_svc_auth: Vec<Arc<dyn svcauth::ServiceAuthMethod>>,
     ) -> anyhow::Result<Self> {
+        // Filter out noop auth methods since they provide no actual
+        // authentication guarantees for verifying internal callers.
+        let authenticated_inbound_svc_auth = inbound_svc_auth
+            .into_iter()
+            .filter(|a| a.name() != "noop")
+            .collect();
+
         let shared = Arc::new(SharedGatewayData {
             name,
             auth: auth_handler,
             tracer,
+            authenticated_inbound_svc_auth,
         });
 
         let mut router = router::Router::new();
@@ -146,6 +156,7 @@ impl Gateway {
                 #[cfg(unix)]
                 None,
                 rx,
+                1, // listeners_per_fd
             )
             .await;
 
@@ -389,18 +400,51 @@ impl ProxyHttp for Gateway {
 
             let headers = &upstream_request.headers;
 
-            let mut call_meta = CallMeta::parse_without_caller(headers).or_err(
-                ErrorType::InternalError,
-                "couldn't parse CallMeta from request",
-            )?;
+            // If the request has a caller header, try to authenticate it.
+            // If authenticated, use the internal caller directly so that
+            // private endpoint access is granted through the gateway.
+            // Note: we only use non-noop auth methods here, since noop auth
+            // provides no actual authentication guarantees.
+            let has_internal_caller = headers.get_meta(MetaKey::Caller).is_some()
+                && !self.inner.shared.authenticated_inbound_svc_auth.is_empty();
+            let (mut call_meta, authenticated_internal_caller) = if has_internal_caller {
+                match CallMeta::parse_with_caller(
+                    &self.inner.shared.authenticated_inbound_svc_auth,
+                    headers,
+                    &HashMap::new(),
+                ) {
+                    Ok(meta) => {
+                        let caller = meta.internal.as_ref().map(|i| i.caller.clone());
+                        (meta, caller)
+                    }
+                    Err(_) => {
+                        // Caller verification failed (e.g. invalid signature).
+                        // Treat as an external request.
+                        let meta = CallMeta::parse_without_caller(headers).or_err(
+                            ErrorType::InternalError,
+                            "couldn't parse CallMeta from request",
+                        )?;
+                        (meta, None)
+                    }
+                }
+            } else {
+                let meta = CallMeta::parse_without_caller(headers).or_err(
+                    ErrorType::InternalError,
+                    "couldn't parse CallMeta from request",
+                )?;
+                (meta, None)
+            };
             gateway_ctx.trace_id = Some(call_meta.trace_id);
             if call_meta.parent_span_id.is_none() {
                 call_meta.parent_span_id = Some(model::SpanId::generate());
             }
 
-            let caller = Caller::Gateway {
+            // If the request comes from an authenticated internal service,
+            // use that as the caller directly so that private endpoint access
+            // is granted. Otherwise, use the gateway as the caller.
+            let caller = authenticated_internal_caller.unwrap_or(Caller::Gateway {
                 gateway: self.inner.shared.name.clone(),
-            };
+            });
             let mut desc = CallDesc {
                 caller: &caller,
                 parent_span: call_meta
@@ -427,8 +471,16 @@ impl ProxyHttp for Gateway {
             };
 
             if let Some(auth_handler) = &self.inner.shared.auth {
+                // Use the same trace sampling decision for the auth handler
+                // as for the rest of the request.
                 let auth_response = auth_handler
-                    .authenticate(upstream_request, call_meta.clone())
+                    .authenticate(
+                        upstream_request,
+                        CallMeta {
+                            trace_sampled: Some(desc.traced),
+                            ..call_meta.clone()
+                        },
+                    )
                     .await
                     .or_err(ErrorType::InternalError, "couldn't authenticate request")?;
 
@@ -455,7 +507,12 @@ impl ProxyHttp for Gateway {
         Ok(())
     }
 
-    async fn fail_to_proxy(&self, session: &mut Session, e: &Error, ctx: &mut Self::CTX) -> u16
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        e: &Error,
+        ctx: &mut Self::CTX,
+    ) -> FailToProxy
     where
         Self::CTX: Send + Sync,
     {
@@ -473,7 +530,10 @@ impl ProxyHttp for Gateway {
                             | ErrorType::ReadError
                             | ErrorType::ConnectionClosed => {
                                 /* conn already dead */
-                                return 0;
+                                return FailToProxy {
+                                    error_code: 0,
+                                    can_reuse_downstream: false,
+                                };
                             }
                             _ => 400,
                         }
@@ -523,7 +583,10 @@ impl ProxyHttp for Gateway {
             .await
             .unwrap_or_else(|e| log::error!("failed to write body: {e}"));
 
-        code
+        FailToProxy {
+            error_code: code,
+            can_reuse_downstream: false,
+        }
     }
 }
 
@@ -575,6 +638,9 @@ struct SharedGatewayData {
     name: EncoreName,
     auth: Option<auth::Authenticator>,
     tracer: trace::Tracer,
+    /// Non-noop service auth methods for verifying incoming internal callers.
+    /// Noop auth is excluded since it provides no authentication guarantees.
+    authenticated_inbound_svc_auth: Vec<Arc<dyn svcauth::ServiceAuthMethod>>,
 }
 
 #[cfg(test)]

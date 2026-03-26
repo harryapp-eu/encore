@@ -258,7 +258,8 @@ func parseInfraConfigEnv(infraCfgPath string) *Runtime {
 	var i int
 	for name, redis := range infraCfg.Redis {
 		cfg.RedisServers[i] = &RedisServer{
-			Host: redis.Host,
+			Host:     redis.Host,
+			InMemory: redis.InMemory,
 		}
 		if redis.TLSConfig != nil {
 			cfg.RedisServers[i].EnableTLS = true
@@ -273,7 +274,7 @@ func parseInfraConfigEnv(infraCfgPath string) *Runtime {
 			case "acl":
 				cfg.RedisServers[i].User = redis.Auth.Username.Value()
 				cfg.RedisServers[i].Password = redis.Auth.Password.Value()
-			case "auth":
+			case "auth_string":
 				cfg.RedisServers[i].Password = redis.Auth.AuthString.Value()
 			default:
 				log.Fatalf("encore runtime: fatal error: unsupported redis auth type %q", redis.Auth.Type)

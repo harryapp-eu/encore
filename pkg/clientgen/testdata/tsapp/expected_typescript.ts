@@ -85,12 +85,18 @@ export interface ClientOptions {
     auth?: svc.AuthParams | AuthDataGenerator
 }
 
+/**
+ * Svc is a service for testing the client generator.
+ */
 export namespace svc {
     export interface AuthParams {
         cookie?: string
         token?: string
     }
 
+    /**
+     * Request is the request type for testing doc comments on interfaces.
+     */
     export interface Request {
         /**
          * Foo is good
@@ -109,6 +115,9 @@ export namespace svc {
         headerNum?: number
     }
 
+    /**
+     * Request is the request type for testing doc comments on interfaces.
+     */
     export interface Request {
         /**
          * Foo is good
@@ -127,6 +136,9 @@ export namespace svc {
         headerNum?: number
     }
 
+    /**
+     * Request is the request type for testing doc comments on interfaces.
+     */
     export interface Request {
         /**
          * Foo is good
@@ -216,6 +228,10 @@ export namespace svc {
             await this.baseClient.callTypedAPI("POST", `/dummy`, JSON.stringify(body), {headers, query})
         }
 
+        /**
+         * Imported tests the usage of imported types
+         * and this comment is also multiline.
+         */
         public async imported(params: common_stuff.ImportedRequest): Promise<common_stuff.ImportedResponse> {
             // Now make the actual call to the API
             const resp = await this.baseClient.callTypedAPI("POST", `/imported`, JSON.stringify(params))
@@ -232,6 +248,9 @@ export namespace svc {
             return await resp.json() as common_stuff.ImportedResponse
         }
 
+        /**
+         * Root is a basic POST endpoint.
+         */
         public async root(params: Request): Promise<void> {
             // Convert our params into the objects we need for the request
             const headers = makeRecord<string, string>({

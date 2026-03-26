@@ -42,6 +42,9 @@ export default class Client {
     }
 }
 
+/**
+ * Svc is a service for testing the client generator.
+ */
 class SvcServiceClient {
     constructor(baseClient) {
         this.baseClient = baseClient
@@ -106,6 +109,10 @@ class SvcServiceClient {
         await this.baseClient.callTypedAPI("POST", `/dummy`, JSON.stringify(body), {headers, query})
     }
 
+    /**
+     * Imported tests the usage of imported types
+     * and this comment is also multiline.
+     */
     async imported(params) {
         // Now make the actual call to the API
         const resp = await this.baseClient.callTypedAPI("POST", `/imported`, JSON.stringify(params))
@@ -122,6 +129,9 @@ class SvcServiceClient {
         return await resp.json()
     }
 
+    /**
+     * Root is a basic POST endpoint.
+     */
     async root(params) {
         // Convert our params into the objects we need for the request
         const headers = makeRecord({
